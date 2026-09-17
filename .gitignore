@@ -2,3 +2,5 @@ data/
 *.zip
 __pycache__/
 *.pyc
+circuit_output.txt
+circuit_output*.txt
