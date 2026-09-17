@@ -4,3 +4,4 @@ __pycache__/
 *.pyc
 circuit_output.txt
 circuit_output*.txt
+webapp/.vercel

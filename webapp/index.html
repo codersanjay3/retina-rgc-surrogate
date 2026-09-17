@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Retina RGC Surrogate Models</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    max-width: 980px; margin: 0 auto; padding: 24px 16px 60px;
+    background: #0f1216; color: #e6e8eb;
+    line-height: 1.5;
+  }
+  h1 { font-size: 1.6rem; margin-bottom: 4px; }
+  h2 { font-size: 1.2rem; margin-top: 40px; border-bottom: 1px solid #2a2f36; padding-bottom: 8px; }
+  p.sub { color: #9aa4af; margin-top: 0; }
+  a { color: #6ea8fe; }
+  .card {
+    background: #171b21; border: 1px solid #2a2f36; border-radius: 10px;
+    padding: 16px; margin-top: 16px;
+  }
+  .grid27 {
+    display: grid; grid-template-columns: repeat(9, 1fr); gap: 6px; margin-top: 12px;
+  }
+  .cellbox {
+    aspect-ratio: 1; border-radius: 4px; cursor: pointer; position: relative;
+    border: 2px solid transparent; overflow: hidden;
+  }
+  .cellbox:hover, .cellbox.selected { border-color: #6ea8fe; }
+  .cellbox canvas { width: 100%; height: 100%; display: block; }
+  .cellbox .lbl {
+    position: absolute; bottom: 1px; right: 3px; font-size: 9px; color: #ffffffaa;
+    text-shadow: 0 0 2px #000;
+  }
+  .legend { display: flex; gap: 18px; flex-wrap: wrap; margin-top: 8px; font-size: 0.85rem; color: #9aa4af; }
+  .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; vertical-align: middle; }
+  #cellDetail { margin-top: 10px; font-size: 0.95rem; }
+  .toggles { display: flex; gap: 16px; margin: 10px 0; flex-wrap: wrap; }
+  .toggles label { display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 0.9rem; }
+  svg text { fill: #9aa4af; font-size: 10px; }
+  .barlabel { fill: #e6e8eb; font-size: 12px; }
+  footer { margin-top: 50px; color: #6b7580; font-size: 0.85rem; }
+  code { background: #20252c; padding: 1px 5px; border-radius: 4px; font-size: 0.9em; }
+</style>
+</head>
+<body>
+
+<h1>Modeling a Real Retinal Ganglion Cell</h1>
+<p class="sub">Three different models, one real neuron: a classical linear filter (LNP), a spatiotemporal CNN, and a simulated analog circuit — each predicting the same cell's spiking from the same flickering-checkerboard movie.</p>
+
+<div class="card">
+  <p>Dataset: 27 real primate retinal ganglion cells, recorded while watching 20 minutes of 10×10 binary spatiotemporal white noise (Chichilnisky &amp; Pillow, <em>Nature</em> 2008). Every cell's receptive field below was computed directly from spike-triggered averaging over the real spike trains — nothing here is simulated data.</p>
+</div>
+
+<h2>All 27 cells — receptive fields</h2>
+<p class="sub">Each tile is that cell's spatial receptive field at its peak-response time lag. Click a cell to see its stats below.</p>
+<div class="legend">
+  <span><span class="swatch" style="background:#3b82f6"></span>OFF cell (fires when its receptive field goes dark)</span>
+  <span><span class="swatch" style="background:#ef4444"></span>ON cell (fires when its receptive field brightens)</span>
+</div>
+<div class="grid27" id="grid27"></div>
+<div class="card" id="cellDetail">Click a cell above to see its details.</div>
+
+<h2>Cell 1 — three models vs. the real neuron</h2>
+<p class="sub">Predicted firing rate on a held-out 10-second movie (never used for fitting), compared against the neuron's real average response across 600 repeats of that movie.</p>
+<div class="card">
+  <div class="toggles">
+    <label><input type="checkbox" id="showReal" checked> <span class="swatch" style="background:#e6e8eb"></span>Real PSTH</label>
+    <label><input type="checkbox" id="showLNP" checked> <span class="swatch" style="background:#3b82f6"></span>LNP <span id="lnpR"></span></label>
+    <label><input type="checkbox" id="showCNN" checked> <span class="swatch" style="background:#f59e0b"></span>CNN <span id="cnnR"></span></label>
+    <label><input type="checkbox" id="showCircuit" checked> <span class="swatch" style="background:#22c55e"></span>Circuit <span id="circR"></span></label>
+  </div>
+  <svg id="psthChart" viewBox="0 0 900 320" style="width:100%; height:auto;"></svg>
+</div>
+
+<h2>LNP vs CNN across the whole population</h2>
+<div class="card">
+  <svg id="barChart" viewBox="0 0 900 260" style="width:100%; height:auto;"></svg>
+  <p class="sub" id="barSummary"></p>
+</div>
+
+<footer>
+  Full code, netlists, and write-up: <a href="https://github.com/codersanjay3/retina-rgc-surrogate">github.com/codersanjay3/retina-rgc-surrogate</a>
+</footer>
+
+<script>
+let DATA = null;
+
+fetch('data.json').then(r => r.json()).then(d => { DATA = d; init(); });
+
+function rfColor(v) {
+  // v in [-1,1]; negative = blue (OFF-ish), positive = red (ON-ish)
+  const a = Math.min(1, Math.abs(v));
+  if (v < 0) {
+    const g = Math.round(255 * (1 - a)), b = 255;
+    return `rgb(${Math.round(255*(1-a))},${Math.round(255*(1-a*0.3))},${b})`;
+  } else {
+    const r = 255;
+    return `rgb(${r},${Math.round(255*(1-a))},${Math.round(255*(1-a))})`;
+  }
+}
+
+function drawRF(canvas, rf) {
+  const n = rf.length; // 10
+  canvas.width = 100; canvas.height = 100;
+  const ctx = canvas.getContext('2d');
+  const cell = 100 / n;
+  for (let y = 0; y < n; y++) {
+    for (let x = 0; x < n; x++) {
+      ctx.fillStyle = rfColor(rf[y][x]);
+      ctx.fillRect(x*cell, y*cell, cell+0.5, cell+0.5);
+    }
+  }
+}
+
+function selectCell(c) {
+  document.querySelectorAll('.cellbox').forEach(el => el.classList.remove('selected'));
+  document.getElementById('cellbox-' + c.cell).classList.add('selected');
+  document.getElementById('cellDetail').innerHTML = `
+    <strong>Cell ${c.cell}</strong> &mdash; ${c.sign}-type &middot;
+    ${c.n_spikes.toLocaleString()} spikes over the 20-minute training movie<br>
+    LNP correlation with real PSTH: <strong>${c.lnp_r}</strong> &middot;
+    CNN correlation: <strong>${c.cnn_r}</strong>
+    ${c.cell === 1 ? ' &middot; <em>see the full comparison below</em>' : ''}
+  `;
+}
+
+function buildGrid() {
+  const grid = document.getElementById('grid27');
+  DATA.cells.forEach(c => {
+    const box = document.createElement('div');
+    box.className = 'cellbox';
+    box.id = 'cellbox-' + c.cell;
+    const canvas = document.createElement('canvas');
+    drawRF(canvas, c.rf);
+    box.appendChild(canvas);
+    const lbl = document.createElement('div');
+    lbl.className = 'lbl';
+    lbl.textContent = c.cell;
+    box.appendChild(lbl);
+    box.addEventListener('click', () => selectCell(c));
+    grid.appendChild(box);
+  });
+}
+
+function lineSVG(points, color, w, h, xmax, ymax) {
+  const pts = points.map((v, i) => `${(i/xmax*w).toFixed(1)},${(h - (v/ymax*h)).toFixed(1)}`).join(' ');
+  return `<polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.3" opacity="0.9"/>`;
+}
+
+function drawPSTH() {
+  const d = DATA.cell1_detail;
+  const svg = document.getElementById('psthChart');
+  const W = 900, H = 320, padL = 40, padB = 30, padT = 10, padR = 10;
+  const plotW = W - padL - padR, plotH = H - padT - padB;
+  const n = d.frames.length;
+  const allVals = [...d.real_psth, ...d.lnp_pred, ...d.cnn_pred, ...d.circuit_pred];
+  const ymax = Math.max(...allVals) * 1.05;
+
+  function toPts(arr) {
+    return arr.map((v, i) => `${(padL + i/n*plotW).toFixed(1)},${(padT + plotH - v/ymax*plotH).toFixed(1)}`).join(' ');
+  }
+
+  let s = '';
+  // axes
+  s += `<line x1="${padL}" y1="${padT+plotH}" x2="${padL+plotW}" y2="${padT+plotH}" stroke="#2a2f36"/>`;
+  s += `<line x1="${padL}" y1="${padT}" x2="${padL}" y2="${padT+plotH}" stroke="#2a2f36"/>`;
+  s += `<text x="4" y="${padT+10}">${ymax.toFixed(1)}</text>`;
+  s += `<text x="4" y="${padT+plotH}">0</text>`;
+  s += `<text x="${padL+plotW/2}" y="${H-6}" text-anchor="middle">frame (repeat stimulus, 10s @ 120Hz)</text>`;
+
+  if (document.getElementById('showReal').checked)
+    s += `<polyline points="${toPts(d.real_psth)}" fill="none" stroke="#e6e8eb" stroke-width="1.5"/>`;
+  if (document.getElementById('showLNP').checked)
+    s += `<polyline points="${toPts(d.lnp_pred)}" fill="none" stroke="#3b82f6" stroke-width="1.2" opacity="0.85"/>`;
+  if (document.getElementById('showCNN').checked)
+    s += `<polyline points="${toPts(d.cnn_pred)}" fill="none" stroke="#f59e0b" stroke-width="1.2" opacity="0.85"/>`;
+  if (document.getElementById('showCircuit').checked)
+    s += `<polyline points="${toPts(d.circuit_pred)}" fill="none" stroke="#22c55e" stroke-width="1.2" opacity="0.85"/>`;
+
+  svg.innerHTML = s;
+  document.getElementById('lnpR').textContent = `(r=${d.lnp_r})`;
+  document.getElementById('cnnR').textContent = `(r=${d.cnn_r})`;
+  document.getElementById('circR').textContent = `(r=${d.circuit_r})`;
+}
+
+function drawBars() {
+  const cells = DATA.cells;
+  const svg = document.getElementById('barChart');
+  const W = 900, H = 260, padL = 40, padB = 30, padT = 20, padR = 10;
+  const plotW = W - padL - padR, plotH = H - padT - padB;
+  const n = cells.length;
+  const bw = plotW / n / 2.4;
+  let s = '';
+  s += `<line x1="${padL}" y1="${padT+plotH}" x2="${padL+plotW}" y2="${padT+plotH}" stroke="#2a2f36"/>`;
+  s += `<text x="4" y="${padT+10}">1.0</text><text x="4" y="${padT+plotH}">0</text>`;
+  cells.forEach((c, i) => {
+    const x0 = padL + i/n*plotW + bw*0.3;
+    const hLNP = c.lnp_r * plotH, hCNN = c.cnn_r * plotH;
+    s += `<rect x="${x0}" y="${padT+plotH-hLNP}" width="${bw}" height="${hLNP}" fill="#3b82f6"/>`;
+    s += `<rect x="${x0+bw}" y="${padT+plotH-hCNN}" width="${bw}" height="${hCNN}" fill="#f59e0b"/>`;
+  });
+  s += `<text x="${padL+plotW/2}" y="${H-6}" text-anchor="middle">cell (1-27)</text>`;
+  svg.innerHTML = s;
+  document.getElementById('barSummary').textContent =
+    `Mean correlation with real PSTH — LNP: ${DATA.lnp_mean_r}, CNN: ${DATA.cnn_mean_r}. ` +
+    `The two are essentially tied: for this i.i.d. white-noise stimulus, a simple linear filter already captures nearly everything a CNN can.`;
+}
+
+function init() {
+  buildGrid();
+  drawPSTH();
+  drawBars();
+  ['showReal','showLNP','showCNN','showCircuit'].forEach(id =>
+    document.getElementById(id).addEventListener('change', drawPSTH));
+  selectCell(DATA.cells[0]);
+}
+</script>
+</body>
+</html>
